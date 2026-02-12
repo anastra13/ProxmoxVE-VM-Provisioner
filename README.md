@@ -24,3 +24,19 @@ Ce script PowerShell permet d'automatiser la création de machines virtuelles su
 ### Via Token API (Recommandé)
 ```powershell
 ./Add_VM_PVE.ps1 -FQDN "pve.mon-domaine.com" -TokenID "root@pam!mon-token" -Secret "ton-secret-uuid"
+
+```
+### Exemples d'authentification par compte
+
+* Compte Système Linux (PAM).
+    ```powershell
+    ./Add_VM_PVE.ps1 -FQDN "pve.domaine.com" -Username "root@pam" -Password "MonMotDePasse"
+    ```
+* **Compte Interne Proxmox (PVE)** : Pour les utilisateurs créés directement dans l'interface Proxmox.
+    ```powershell
+    ./Add_VM_PVE.ps1 -FQDN "pve.domaine.com" -Username "admin@pve" -Password "MonMotDePasse"
+    ```
+* Compte de domaine (ad) : Pour les utilisateurs d'un domaine Microsoft.
+    ```powershell
+    ./Add_VM_PVE.ps1 -FQDN "pve.domaine.com" -Username "admin@domaine.com" -Password "MonMotDePasse"
+    ```
