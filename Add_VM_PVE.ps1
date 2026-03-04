@@ -1,36 +1,23 @@
 <#
-    # Proxmox 9.1 Modern VM Provisioner (PowerShell)
+    Script : Maintenance et mises à jour du cluster Proxmox
+    Auteur : Philippe VELLY
+    Version : 1.1
+    Date : 04/03/2026
+    Description :
+        Ce script automatise la création de VM sur un cluster Proxmox avec les bonnes pratiques.
 
-    Ce script PowerShell permet d'automatiser la création de machines virtuelles sur **Proxmox VE 9.1+** en respectant les standards de sécurité modernes (Windows 11 Ready) et les nouvelles fonctionnalités du cluster (SDN & HA Rules).
+    Prérequis :
+        - PowerShell 7 ou supérieur #https://learn.microsoft.com/en-us/powershell/scripting/install/install-debian?view=powershell-7.5
+        - API Proxmox activée
+        - Proxmox 9.1 ou supérieur
+        - Avoir les resouces en HA https://pve.proxmox.com/pve-docs/pve-admin-guide.html#chapter_pvecm
 
-    ## ✨ Fonctionnalités
-
-    * **Authentification Hybride** : Supporte les Tokens API et les comptes utilisateurs (Ticket + CSRF).
-    * **Compatibilité Proxmox 9.1** : Utilise les nouveaux endpoints pour la Haute Disponibilité (HA Rules).
-    * **Support SDN & Bridge** : Détection automatique des Vnets (SDN) et des Bridges classiques.
-    * **Sécurité Windows 11 Ready** :
-        * BIOS UEFI (OVMF).
-        * TPM v2.0 au format qcow2.
-        * Secure Boot avec certificats **Microsoft 2023**.
-    * **Optimisé pour les Snapshots** : Tous les disques (incluant EFI et TPM) sont forcés au format **qcow2**.
-    * **Intelligence de Cluster** : Sélection automatique du premier nœud actif via le statut LRM (HA).
-
-    ## 🚀 Utilisation
-
-        Usage : TokenID
-        ./Add_VM_PVE.ps1 -FQDN pve.mon-domaine.com -TokenID "root@pam!mon-token" -Secret "fa57313e-878d-4c49-9dd1-7faab4837c55"
-
+    Usage : TokenID
+        ./Add_VM_PVE.ps1 -FQDN jn1223.jn-hebergement.com -TokenID "root@pam!autoupdate" -Secret "fa57313e-878d-4c49-9dd1-7faab4837c55"
     Usage : User / Password
-        ./Add_VM_PVE.ps1 -FQDN pve.mon-domaine.com -Username root@pam -Password PromoxpasswordRootLocal
-        
+        ./Add_VM_PVE.ps1 -FQDN jn1223.jn-hebergement.com -Username root@pam -Password FreePro2025*
     Docs :
         - https://pve.proxmox.com/pve-docs/api-viewer/index.html
-
-    ### Prérequis
-    - PowerShell 7+ installé. https://learn.microsoft.com/en-us/powershell/scripting/install/install-debian?view=powershell-7.5
-    - Un cluster Proxmox VE 9.1. https://pve.proxmox.com/pve-docs/pve-admin-guide.html#chapter_pvecm
-    - Un pool nommé `CUST` (modifiable dans le script).        
-
 #>
 param (
     [Parameter(Mandatory = $true)] [string]$FQDN,
@@ -56,7 +43,7 @@ elseif ($Username -and $Password) {
     try {
         $body = @{ username = $Username; password = $Password }
         $authResponse = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/access/ticket" -Method POST -Body $body -SkipCertificateCheck
-        
+
         # Le Ticket sert de Cookie de session
         # Le CSRFPreventionToken est obligatoire pour les requêtes d'écriture (POST/PUT)
         $headers = @{
@@ -134,18 +121,18 @@ $NodeTarget = $null
 
 # Utilisation d'une boucle foreach classique pour pouvoir utiliser 'break'
 foreach ($nodeEntry in $response.data) {
-    $NodeToCheck = $nodeEntry.node 
+    $NodeToCheck = $nodeEntry.node
     Write-Host "Vérification du nœud: $NodeToCheck" -ForegroundColor Cyan
-    
+
     # Vérifier l'état actuel de la HA
     $responsestatus = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/cluster/ha/status/current" -Headers $headers -Method GET -SkipCertificateCheck
     $nodeStatus = $responsestatus.data | Where-Object { $_.type -eq "lrm" } | Where-Object { $_.node -eq $NodeToCheck }
-    
+
     if ($nodeStatus.status -like "*active*") {
         Write-Host "✅ Le nœud $NodeToCheck est bien actif, sélectionné pour la création." -ForegroundColor Green
         $NodeTarget = $NodeToCheck
         # On casse la boucle ici
-        break 
+        break
     }
 }
 
@@ -200,6 +187,24 @@ $NetworkBridge = Read-Host "Bridge réseau à utiliser"
 $RAM_MB = [int]$RAM_GB * 1024
 $ActualOSType = if ($OSTypeInput -eq "W") { "win11" } else { "l26" }
 
+# --- Construction de la chaîne de disque optimisée ---
+# Note : On utilise 'scsi0' et non 'virtio0' pour supporter l'option 'ssd'
+$DiskOptions = ""
+if ($OSTypeInput -eq "W") {
+    # Windows : Cache Writeback + Discard + Emulation SSD
+    $DiskOptions = ",cache=writeback,discard=on,ssd=1"
+} else {
+    # Linux : Uniquement Emulation SSD
+    $DiskOptions = ",ssd=1"
+}
+
+# --- Logique CPU optimisée pour Windows Server 2025 ---
+$CPUType = "host" # Par défaut pour Linux
+if ($OSTypeInput -eq "W") {
+    # On abandonne le mode 'host' qui cause un effondrement des perfs sur Win2025
+    $CPUType = "x86-64-v4"
+}
+
 # 3. Récupération VMID
 $VMID = (Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/cluster/nextid" -Headers $headers -Method GET -SkipCertificateCheck).data
 
@@ -215,14 +220,14 @@ $VMParams = @{
     memory  = $RAM_MB
     cores   = $VMCores
     sockets = 1
-    cpu     = "host"
+    cpu     = $CPUType
     machine = "q35"
     bios    = "ovmf"
     agent   = 1
-    cdrom   = "none"
-    scsihw  = "virtio-scsi-pci"
+    vga     = "type=virtio,memory=128" # Ajout pour la fluidité graphique
+    scsihw  = "virtio-scsi-single"     # Indispensable pour l'iothread
     net0    = "virtio,bridge=" + $NetworkBridge
-    virtio0 = $TargetStorage + ":" + $SizeGB + ",format=qcow2"
+    scsi0   = $TargetStorage + ":" + $SizeGB + ",format=qcow2" + $DiskOptions + ",iothread=1"
     rng0    = "source=/dev/urandom"
 }
 
