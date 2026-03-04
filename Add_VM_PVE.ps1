@@ -13,9 +13,9 @@
         - Avoir les resouces en HA https://pve.proxmox.com/pve-docs/pve-admin-guide.html#chapter_pvecm
 
     Usage : TokenID
-        ./Add_VM_PVE.ps1 -FQDN jn1223.jn-hebergement.com -TokenID "root@pam!autoupdate" -Secret "fa57313e-878d-4c49-9dd1-7faab4837c55"
+        ./Add_VM_PVE.ps1 -FQDN server.demo.com -TokenID "root@pam!prov" -Secret "fa57313e-878d-4c49-9dd1-7faab4837c55"
     Usage : User / Password
-        ./Add_VM_PVE.ps1 -FQDN jn1223.jn-hebergement.com -Username root@pam -Password FreePro2025*
+        ./Add_VM_PVE.ps1 -FQDN server.demo.com -Username root@pam -Password mypassword
     Docs :
         - https://pve.proxmox.com/pve-docs/api-viewer/index.html
 #>
