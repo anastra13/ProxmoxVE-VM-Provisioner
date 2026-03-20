@@ -198,12 +198,36 @@ if ($OSTypeInput -eq "W") {
     $DiskOptions = ",ssd=1"
 }
 
-# --- Logique CPU optimisée pour Windows Server 2025 ---
-$CPUType = "host" # Par défaut pour Linux
-if ($OSTypeInput -eq "W") {
-    # On abandonne le mode 'host' qui cause un effondrement des perfs sur Win2025
-    $CPUType = "x86-64-v4"
+# --- Logique CPU optimisée  ---
+#$CPUType = "host" # Par défaut pour Linux
+
+# 1. Récupérer les flags réels du CPU du Node
+$NodeStatus = (Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes/$NodeTarget/status" -Headers $headers -Method GET -SkipCertificateCheck).data
+# Les flags sont souvent dans une chaîne de caractères séparés par des espaces
+$CPUFlags = $NodeStatus.cpuinfo.flags
+
+# 2. Logique de décision basée sur les prérequis réels
+$BestCPUType = "x86-64-v1" # Sécurité
+
+# Vérification v2 (Popcnt, SSE4.1, SSE4.2, SSSE3)
+if ($CPUFlags -match "popcnt" -and $CPUFlags -match "sse4_2") {
+    $BestCPUType = "x86-64-v2"
 }
+
+# Vérification v3 (AVX2, BMI1, BMI2, FMA, MOVBE)
+if ($CPUFlags -match "avx2" -and $CPUFlags -match "bmi2" -and $CPUFlags -match "fma") {
+    $BestCPUType = "x86-64-v3"
+}
+
+# Vérification v4 (AVX512F, AVX512BW, AVX512CD, AVX512DQ, AVX512VL)
+if ($CPUFlags -match "avx512f" -and $CPUFlags -match "avx512vl" -and $CPUFlags -match "avx512bw") {
+    $BestCPUType = "x86-64-v4"
+}
+
+$CPUType = $BestCPUType
+Write-Host "📡 Analyse API terminée. Meilleur choix physique : $BestCPUType" -ForegroundColor Green
+
+##### --- End CPU --- ###
 
 # 3. Récupération VMID
 $VMID = (Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/cluster/nextid" -Headers $headers -Method GET -SkipCertificateCheck).data
