@@ -174,8 +174,25 @@ catch { Write-Host "⚠️ Erreur SDN Vnets" -ForegroundColor Gray }
 
 $networks | Format-Table -AutoSize
 
+# 3. Liste des Pools
+try {
+    $poolResp = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/pools" -Headers $headers -Method GET -SkipCertificateCheck
+    $poolData = $poolResp.data | ForEach-Object {
+        [PSCustomObject]@{ ID = $_.poolid; Commentaire = $_.comment }
+    }
+    Write-Host "`n--- Pools disponibles ---" -ForegroundColor Cyan
+    if ($poolData) {
+        $poolData | Format-Table -AutoSize
+    } else {
+        Write-Host "ℹ️ Aucun pool créé. La VM sera créée hors pool." -ForegroundColor Gray
+    }
+}
+catch { Write-Host "❌ Erreur lors de la récupération des Pools" -ForegroundColor Red }
+
+
 # --- Saisies Utilisateur ---
 $VMName = Read-Host "Nom de la VM"
+$TargetPool    = Read-Host "Pool de ressources (Laissez vide pour aucun)"
 $OSTypeInput = Read-Host "Type d'OS (W pour Windows 11 / L pour Linux)"
 $TargetStorage = Read-Host "Nom du stockage (colonne Nom)"
 $SizeGB = Read-Host "Taille du disque (en Go)"
@@ -238,7 +255,7 @@ Write-Host "`n🚀 Configuration du profil $ActualOSType pour $VMName..." -Foreg
 $VMParams = @{
     vmid    = $VMID
     name    = $VMName
-    pool    = "CUST"
+    pool    = $TargetPool
     node    = $NodeTarget
     ostype  = $ActualOSType
     memory  = $RAM_MB
