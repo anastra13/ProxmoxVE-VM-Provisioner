@@ -269,6 +269,8 @@ $VMParams = @{
     scsihw  = "virtio-scsi-single"     # Indispensable pour l'iothread
     net0    = "virtio,bridge=" + $NetworkBridge
     scsi0   = $TargetStorage + ":" + $SizeGB + ",format=qcow2" + $DiskOptions + ",iothread=1"
+    # Lecteur CD-ROM sur scsi1
+    scsi1   = "none,media=cdrom"
     rng0    = "source=/dev/urandom"
 }
 
