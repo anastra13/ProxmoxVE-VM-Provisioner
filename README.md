@@ -19,7 +19,6 @@ Ce script PowerShell permet d'automatiser la création de machines virtuelles su
 ### Prérequis
 - PowerShell 7+ installé.
 - Un cluster Proxmox VE 9.1.
-- Un pool nommé `CUST` (modifiable dans le script).
 
 ### Via Token API (Recommandé)
 ```powershell
