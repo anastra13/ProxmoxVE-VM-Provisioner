@@ -1,18 +1,24 @@
-# Proxmox 9.1 Modern VM Provisioner (PowerShell 7.X)
+# 🚀 Proxmox 9.1 Modern VM Provisioner (PowerShell 7.X)
 
-Ce script PowerShell permet d'automatiser la création de machines virtuelles sur Proxmox VE 9.1 en respectant les standards de sécurité modernes (Windows 11 Ready) et les nouvelles fonctionnalités du cluster (SDN & HA Rules).
+Ce script PowerShell automatise la création de machines virtuelles sur **Proxmox VE 9.1** en respectant les standards de performance et de sécurité actuels (Windows 11 Ready, SDN, et HA).
 
 ## ✨ Fonctionnalités
 
-* **Authentification Hybride** : Supporte les Tokens API et les comptes utilisateurs (Ticket + CSRF).
-* **Compatibilité Proxmox 9.1** : Utilise les nouveaux endpoints pour la Haute Disponibilité (HA Rules).
-* **Support SDN & Bridge** : Détection automatique des Vnets (SDN) et des Bridges classiques.
+* **Authentification Hybride** : Supporte les Tokens API (recommandé) et les comptes utilisateurs (Ticket + CSRF).
+* **Intelligence CPU & Topologie (Nouveau)** :
+    * **Analyse Physique** : Récupère les capacités réelles du nœud (cœurs/sockets) pour optimiser le placement.
+    * **Topologie Auto-Adaptive** : Aligne automatiquement le nombre de sockets virtuels sur l'architecture physique pour éviter les latences de cache.
+    * **Gestion du NUMA** : Activation intelligente du NUMA pour les "Large VMs" ou lors de l'activation du Hotplug.
+* **Hotplug Dynamique** : Option pour activer l'ajout à chaud de **CPU, RAM, Disque et Réseau**.
 * **Sécurité Windows 11 Ready** :
-    * BIOS UEFI (OVMF).
-    * TPM v2.0 au format qcow2.
-    * Secure Boot avec certificats **Microsoft 2023**.
-* **Optimisé pour les Snapshots** : Tous les disques (incluant EFI et TPM) sont forcés au format **qcow2**.
-* **Intelligence de Cluster** : Sélection automatique du premier nœud actif via le statut LRM (HA).
+    * BIOS **UEFI (OVMF)** avec Secure Boot (Certificats Microsoft 2023).
+    * **TPM v2.0** émulé.
+* **Optimisé pour la Production** :
+    * Contrôleur **VirtIO SCSI Single** (meilleures perfs IO).
+    * Disques forcés au format **qcow2** pour garantir le support des Snapshots.
+    * Lecteur CD-ROM sur bus **SCSI** pour éviter les limitations de l'IDE.
+* **Intelligence de Cluster** : Sélection automatique du nœud via le statut **LRM (Haute Disponibilité)**.
+
 
 ## 🚀 Utilisation
 
