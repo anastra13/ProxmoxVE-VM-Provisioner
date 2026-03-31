@@ -189,6 +189,17 @@ try {
 }
 catch { Write-Host "❌ Erreur lors de la récupération des Pools" -ForegroundColor Red }
 
+# Extraction des infos physiques
+$NodeStatus = (Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes/$NodeTarget/status" -Headers $headers -Method GET -SkipCertificateCheck).data
+$PhysSockets = [int]$NodeStatus.cpuinfo.sockets
+$PhysCpus    = [int]$NodeStatus.cpuinfo.cpus # Total des threads (ex: 64)
+$CoresPerSock = $PhysCpus / $PhysSockets     # Threads par socket (ex: 32)
+
+Write-Host "`n--- Capacités Physiques du Nœud ($NodeTarget) ---" -ForegroundColor Yellow
+Write-Host "🔲 Sockets physiques : $PhysSockets"
+Write-Host "🧠 Threads par socket : $CoresPerSock"
+Write-Host "🚀 Total threads dispo : $PhysCpus"
+
 
 # --- Saisies Utilisateur ---
 $VMName = Read-Host "Nom de la VM"
@@ -197,7 +208,32 @@ $OSTypeInput = Read-Host "Type d'OS (W pour Windows 11 / L pour Linux)"
 $TargetStorage = Read-Host "Nom du stockage (colonne Nom)"
 $SizeGB = Read-Host "Taille du disque (en Go)"
 $RAM_GB = Read-Host "Quantité de RAM (en Go)"
-$VMCores = Read-Host "Nombre de coeurs (CPU)"
+$VMCoresInput = Read-Host "Nombre de coeurs (CPU)"
+$HotplugEnable = Read-Host "Activer le Hotplug CPU/RAM/Disk ? (O/N)"
+
+# --- Calcul Automatique de la Topologie ---
+# Si on demande plus de coeurs qu'un seul socket physique n'en possède,
+# on passe à 2 sockets virtuels pour de meilleures perfs (NUMA).
+$VMCores = [int]$VMCoresInput
+if ($VMCores -gt $CoresPerSock) {
+    $VMSockets = 2
+    $VMCoresPerSocket = [Math]::Ceiling($VMCores / 2)
+    $ActivateNuma = 1
+    Write-Host "ℹ️ Topologie : Répartition sur 2 sockets virtuels (Large VM)." -ForegroundColor Cyan
+} else {
+    $VMSockets = 1
+    $VMCoresPerSocket = $VMCores
+    $ActivateNuma = 0
+}
+
+# Forcer NUMA si Hotplug RAM demandé (Prérequis QEMU)
+if ($HotplugEnable -eq "O") {
+    $ActivateNuma = 1
+    $HotplugValue = "network,disk,cpu,memory"
+} else {
+    $HotplugValue = "network,disk,usb"
+}
+
 $NetworkBridge = Read-Host "Bridge réseau à utiliser"
 
 # Traitement des variables
@@ -255,13 +291,14 @@ Write-Host "`n🚀 Configuration du profil $ActualOSType pour $VMName..." -Foreg
 $VMParams = @{
     vmid    = $VMID
     name    = $VMName
-    pool    = $TargetPool
     node    = $NodeTarget
     ostype  = $ActualOSType
     memory  = $RAM_MB
+    numa    = $ActivateNuma
     cores   = $VMCores
-    sockets = 1
+    sockets = $VMSockets
     cpu     = $CPUType
+    hotplug = $HotplugValue
     machine = "q35"
     bios    = "ovmf"
     agent   = 1
@@ -274,6 +311,11 @@ $VMParams = @{
     rng0    = "source=/dev/urandom"
 }
 
+# --- AJOUT DYNAMIQUE DU POOL ---
+if (-not [string]::IsNullOrWhiteSpace($TargetPool)) {
+    Write-Host "🏷️ Assignation au pool : $TargetPool" -ForegroundColor Gray
+    $VMParams.Add("pool", $TargetPool)
+}
 Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes/$NodeTarget/qemu" -Headers $headers -Method POST -Body $VMParams -SkipCertificateCheck
 
 # 5. Ajout EFI/TPM (Format qcow2 forcé pour Snapshots)
