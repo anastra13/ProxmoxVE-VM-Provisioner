@@ -1,293 +1,230 @@
 <#
-    Script : Maintenance et mises à jour du cluster Proxmox
-    Auteur : Philippe VELLY
-    Version : 1.1
-    Date : 04/03/2026
+    Script : Proxmox Cluster Maintenance and VM Deployment
+    Author : Philippe VELLY
+    Version : 1.2
+    Date : 03/31/2026
     Description :
-        Ce script automatise la création de VM sur un cluster Proxmox avec les bonnes pratiques.
+        This script automates VM creation on a Proxmox cluster using industry best practices.
 
-    Prérequis :
-        - PowerShell 7 ou supérieur #https://learn.microsoft.com/en-us/powershell/scripting/install/install-debian?view=powershell-7.5
-        - API Proxmox activée
-        - Proxmox 9.1 ou supérieur
-        - Avoir les resouces en HA https://pve.proxmox.com/pve-docs/pve-admin-guide.html#chapter_pvecm
+    Prerequisites :
+        - PowerShell 7 or higher #https://learn.microsoft.com/en-us/powershell/scripting/install/install-debian?view=powershell-7.5
+        - Proxmox API enabled
+        - Proxmox 9.1 or higher
+        - HA Resources configured https://pve.proxmox.com/pve-docs/pve-admin-guide.html#chapter_pvecm
 
     Usage : TokenID
-        ./Add_VM_PVE.ps1 -FQDN server.demo.com -TokenID "root@pam!prov" -Secret "fa57313e-878d-4c49-9dd1-7faab4837c55"
+        ./Add_VM_PVE.ps1 -FQDN jn1223.jn-hebergement.com -TokenID "root@pam!autoupdate" -Secret "uuid-secret-here"
     Usage : User / Password
-        ./Add_VM_PVE.ps1 -FQDN server.demo.com -Username root@pam -Password mypassword
+        ./Add_VM_PVE.ps1 -FQDN jn1223.jn-hebergement.com -Username root@pam -Password YourPassword
     Docs :
         - https://pve.proxmox.com/pve-docs/api-viewer/index.html
 #>
 param (
     [Parameter(Mandatory = $true)] [string]$FQDN,
-    [string]$TokenID,  # Optionnel si on utilise User/Pass
-    [string]$Secret,   # Optionnel si on utilise User/Pass
-    [string]$Username, # Optionnel si on utilise le Token
-    [string]$Password  # Optionnel si on utilise le Token
+    [string]$TokenID,  # Optional if using User/Pass
+    [string]$Secret,   # Optional if using User/Pass
+    [string]$Username, # Optional if using Token
+    [string]$Password  # Optional if using Token
 )
 
 $ProxmoxServer = "https://" + $FQDN + ":8006"
 $headers = @{}
 
-# --- Logique de Connexion ---
+# --- Connection Logic ---
 
 if ($TokenID -and $Secret) {
     # MODE 1 : API TOKEN
-    Write-Host "🔑 Authentification par Token API..." -ForegroundColor Cyan
+    Write-Host "🔑 Authenticating via API Token..." -ForegroundColor Cyan
     $headers = @{ "Authorization" = "PVEAPIToken $TokenID=$Secret" }
 }
 elseif ($Username -and $Password) {
     # MODE 2 : USER / PASSWORD (Ticket)
-    Write-Host "👤 Authentification par Compte Utilisateur..." -ForegroundColor Cyan
+    Write-Host "👤 Authenticating via User Account..." -ForegroundColor Cyan
     try {
         $body = @{ username = $Username; password = $Password }
         $authResponse = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/access/ticket" -Method POST -Body $body -SkipCertificateCheck
 
-        # Le Ticket sert de Cookie de session
-        # Le CSRFPreventionToken est obligatoire pour les requêtes d'écriture (POST/PUT)
+        # The Ticket acts as a session Cookie
+        # CSRFPreventionToken is mandatory for write requests (POST/PUT)
         $headers = @{
             "Cookie" = "PVEAuthCookie=$($authResponse.data.ticket)"
             "CSRFPreventionToken" = $authResponse.data.CSRFPreventionToken
         }
-        Write-Host "✅ Ticket récupéré avec succès." -ForegroundColor Gray
+        Write-Host "✅ Ticket retrieved successfully." -ForegroundColor Gray
     }
     catch {
-        Write-Host "❌ Échec de l'authentification : $_" -ForegroundColor Red
+        Write-Host "❌ Authentication failed: $_" -ForegroundColor Red
         exit 1
     }
 }
 else {
-    Write-Host "❌ Erreur : Vous devez fournir soit un Token (-TokenID/-Secret) soit un Compte (-Username/-Password)." -ForegroundColor Red
+    Write-Host "❌ Error: You must provide either a Token (-TokenID/-Secret) or an Account (-Username/-Password)." -ForegroundColor Red
     exit 1
 }
 
-# --- Test de connexion final (Identique pour les deux modes) ---
+# --- Initial Connection Test & Version Validation ---
 
 try {
+    # Check PowerShell version
+    if ($PSVersionTable.PSVersion.Major -lt 7) {
+        Write-Host "❌ PowerShell 7 or higher is required. Current version: $($PSVersionTable.PSVersion)" -ForegroundColor Red
+        exit 1
+    }
+
     $response = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/version" -Headers $headers -Method GET -SkipCertificateCheck
-    Write-Host "`n✅ Connexion à Proxmox réussie !" -ForegroundColor Green
-    Write-Host "ℹ️ Nœud source : $FQDN"
-    Write-Host "ℹ️ Version PVE : $($response.data.version) (Release: $($response.data.release))" -ForegroundColor Cyan
+    $PveVersion = [decimal]$response.data.release
+    
+    Write-Host "`n✅ Connected to Proxmox successfully!" -ForegroundColor Green
+    Write-Host "ℹ️ Source Node: $FQDN"
+    Write-Host "ℹ️ PVE Version: $($response.data.version) (Release: $PveVersion)" -ForegroundColor Cyan
+
+    if ($PveVersion -lt 9.0) {
+        Write-Host "❌ Proxmox VE $PveVersion detected. Version 9.1 or higher required." -ForegroundColor Red
+        exit 1
+    }
 }
 catch {
-    Write-Host "❌ Erreur d'accès à l'API. Vérifiez les permissions du compte ou du Token." -ForegroundColor Red
+    Write-Host "❌ API access error. Check account permissions or Token validity." -ForegroundColor Red
     exit 1
 }
 
-############################################
+# --- Cluster Node Selection (HA LRM Check) ---
 
-
-# Test de connexion à l'API Proxmox
-try {
-    $response = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/version" -Headers $headers -Method GET -SkipCertificateCheck
-    Write-Host "✅ Connexion à Proxmox réussie ! Version : $($response.data.release)" -ForegroundColor Green
-}
-catch {
-    Write-Host "❌ Impossible de se connecter à Proxmox. Vérifiez vos paramètres." -ForegroundColor Red
-    exit 1
-}
-
-
-# Vérifier la version de PowerShell
-if ($PSVersionTable.PSVersion.Major -lt 7) {
-    Write-Host "❌ PowerShell 7 ou supérieur est requis. Version actuelle: $($PSVersionTable.PSVersion)" -ForegroundColor Red
-    exit 1  # Quitter le script si la version est insuffisante
-}
-
-
-$ProxmoxVersionMin = 9.0
-
-# Récupérer la version actuelle de Proxmox
-$response = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/version" -Headers $headers -Method GET -SkipCertificateCheck
-$PveVersion = [decimal]$response.data.release  # Extraire uniquement la version majeure
-
-if ($PveVersion -lt $ProxmoxVersionMin) {
-    Write-Host "❌ Proxmox VE $PveVersion détecté. Version 8.0 ou supérieure requise." -ForegroundColor Red
-    exit 1 # Quitter le script si la version de PVE n'est pas bonne
-}
-else {
-    Write-Host "✅ Proxmox VE $PveVersion est compatible !" -ForegroundColor Green
-}
-
-Write-Host "✅ Prérequis validés : PowerShell version 7+, Proxmox VE 9.1 !!" -ForegroundColor Green
-
-
-# Liste des nœuds du cluster
-$response = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes" -Headers $headers -Method Get -SkipCertificateCheck
-
-# On initialise la variable à vide
+$nodesResponse = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes" -Headers $headers -Method Get -SkipCertificateCheck
 $NodeTarget = $null
 
-# Utilisation d'une boucle foreach classique pour pouvoir utiliser 'break'
-foreach ($nodeEntry in $response.data) {
+foreach ($nodeEntry in $nodesResponse.data) {
     $NodeToCheck = $nodeEntry.node
-    Write-Host "Vérification du nœud: $NodeToCheck" -ForegroundColor Cyan
+    Write-Host "Checking node: $NodeToCheck" -ForegroundColor Cyan
 
-    # Vérifier l'état actuel de la HA
-    $responsestatus = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/cluster/ha/status/current" -Headers $headers -Method GET -SkipCertificateCheck
-    $nodeStatus = $responsestatus.data | Where-Object { $_.type -eq "lrm" } | Where-Object { $_.node -eq $NodeToCheck }
+    # Check current HA status
+    $haStatus = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/cluster/ha/status/current" -Headers $headers -Method GET -SkipCertificateCheck
+    $lrmStatus = $haStatus.data | Where-Object { $_.type -eq "lrm" -and $_.node -eq $NodeToCheck }
 
-    if ($nodeStatus.status -like "*active*") {
-        Write-Host "✅ Le nœud $NodeToCheck est bien actif, sélectionné pour la création." -ForegroundColor Green
+    if ($lrmStatus.status -like "*active*") {
+        Write-Host "✅ Node $NodeToCheck is active, selected for deployment." -ForegroundColor Green
         $NodeTarget = $NodeToCheck
-        # On casse la boucle ici
         break
     }
 }
 
-# Vérification de sécurité
 if (-not $NodeTarget) {
-    Write-Host "❌ Aucun nœud actif trouvé dans le cluster !" -ForegroundColor Red
-    exit
+    Write-Host "❌ No active nodes found in the cluster!" -ForegroundColor Red
+    exit 1
 }
 
+# --- Resource Discovery ---
 
-# 1. Liste des Stockages (Ta méthode validée)
+# 1. Storage List
 try {
     $storageResp = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/storage" -Headers $headers -Method GET -SkipCertificateCheck
     $storageData = $storageResp.data | ForEach-Object {
-        [PSCustomObject]@{ Nom = $_.storage; Type = $_.type; Contenu = $_.content; Partagé = if ($_.shared -eq 1) { "Oui" } else { "Non" } }
+        [PSCustomObject]@{ Name = $_.storage; Type = $_.type; Content = $_.content; Shared = if ($_.shared -eq 1) { "Yes" } else { "No" } }
     }
-    Write-Host "`n--- Stockages disponibles ---" -ForegroundColor Yellow
+    Write-Host "`n--- Available Storage ---" -ForegroundColor Yellow
     $storageData | Format-Table -AutoSize
 }
-catch { Write-Host "❌ Erreur Stockage" -ForegroundColor Red; exit }
+catch { Write-Host "❌ Storage Retrieval Error" -ForegroundColor Red; exit 1 }
 
-# 2. Liste des interfaces Réseau (Bridges et Vnets SDN)
-Write-Host "--- Réseaux disponibles ---" -ForegroundColor Yellow
+# 2. Network Interfaces (Bridges and SDN Vnets)
+Write-Host "--- Available Networks ---" -ForegroundColor Yellow
 $networks = @()
 
-# Récupération des Bridges physiques
+# Fetch physical Bridges
 try {
     $bridgeResp = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes/$NodeTarget/network?type=bridge" -Headers $headers -Method GET -SkipCertificateCheck
-    $bridgeResp.data | ForEach-Object { $networks += [PSCustomObject]@{ Type = "Bridge"; Nom = $_.iface; Info = $_.comment } }
+    $bridgeResp.data | ForEach-Object { $networks += [PSCustomObject]@{ Type = "Bridge"; Name = $_.iface; Info = $_.comment } }
 }
-catch { Write-Host "⚠️ Erreur Bridges" -ForegroundColor Gray }
+catch { Write-Host "⚠️ Bridge Retrieval Error" -ForegroundColor Gray }
 
-# Récupération des Vnets SDN
+# Fetch SDN Vnets
 try {
     $vnetResp = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/cluster/sdn/vnets" -Headers $headers -Method GET -SkipCertificateCheck
-    $vnetResp.data | ForEach-Object { $networks += [PSCustomObject]@{ Type = "SDN-Vnet"; Nom = $_.vnet; Info = "Zone: $($_.zone) / Tag: $($_.tag)" } }
+    $vnetResp.data | ForEach-Object { $networks += [PSCustomObject]@{ Type = "SDN-Vnet"; Name = $_.vnet; Info = "Zone: $($_.zone) / Tag: $($_.tag)" } }
 }
-catch { Write-Host "⚠️ Erreur SDN Vnets" -ForegroundColor Gray }
+catch { Write-Host "⚠️ SDN Vnet Retrieval Error" -ForegroundColor Gray }
 
 $networks | Format-Table -AutoSize
 
-# 3. Liste des Pools
+# 3. Resource Pools
 try {
     $poolResp = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/pools" -Headers $headers -Method GET -SkipCertificateCheck
-    $poolData = $poolResp.data | ForEach-Object {
-        [PSCustomObject]@{ ID = $_.poolid; Commentaire = $_.comment }
-    }
-    Write-Host "`n--- Pools disponibles ---" -ForegroundColor Cyan
-    if ($poolData) {
-        $poolData | Format-Table -AutoSize
+    Write-Host "--- Available Pools ---" -ForegroundColor Cyan
+    if ($poolResp.data) {
+        $poolResp.data | Select-Object @{N="ID";E={$_.poolid}}, @{N="Comment";E={$_.comment}} | Format-Table -AutoSize
     } else {
-        Write-Host "ℹ️ Aucun pool créé. La VM sera créée hors pool." -ForegroundColor Gray
+        Write-Host "ℹ️ No pools found. VM will be created without a pool." -ForegroundColor Gray
     }
 }
-catch { Write-Host "❌ Erreur lors de la récupération des Pools" -ForegroundColor Red }
+catch { Write-Host "❌ Pool Retrieval Error" -ForegroundColor Red }
 
-# Extraction des infos physiques
+# --- Physical CPU Capabilities Analysis ---
+
 $NodeStatus = (Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes/$NodeTarget/status" -Headers $headers -Method GET -SkipCertificateCheck).data
 $PhysSockets = [int]$NodeStatus.cpuinfo.sockets
-$PhysCpus    = [int]$NodeStatus.cpuinfo.cpus # Total des threads (ex: 64)
-$CoresPerSock = $PhysCpus / $PhysSockets     # Threads par socket (ex: 32)
+$PhysCpus    = [int]$NodeStatus.cpuinfo.cpus 
+$CoresPerSock = $PhysCpus / $PhysSockets     
+$CPUFlags = $NodeStatus.cpuinfo.flags
 
-Write-Host "`n--- Capacités Physiques du Nœud ($NodeTarget) ---" -ForegroundColor Yellow
-Write-Host "🔲 Sockets physiques : $PhysSockets"
-Write-Host "🧠 Threads par socket : $CoresPerSock"
-Write-Host "🚀 Total threads dispo : $PhysCpus"
+Write-Host "`n--- Node Physical Capabilities ($NodeTarget) ---" -ForegroundColor Yellow
+Write-Host "🔲 Physical Sockets: $PhysSockets"
+Write-Host "🧠 Threads per Socket: $CoresPerSock"
+Write-Host "🚀 Total Threads available: $PhysCpus"
 
+# --- User Input ---
 
-# --- Saisies Utilisateur ---
-$VMName = Read-Host "Nom de la VM"
-$TargetPool    = Read-Host "Pool de ressources (Laissez vide pour aucun)"
-$OSTypeInput = Read-Host "Type d'OS (W pour Windows 11 / L pour Linux)"
-$TargetStorage = Read-Host "Nom du stockage (colonne Nom)"
-$SizeGB = Read-Host "Taille du disque (en Go)"
-$RAM_GB = Read-Host "Quantité de RAM (en Go)"
-$VMCoresInput = Read-Host "Nombre de coeurs (CPU)"
-$HotplugEnable = Read-Host "Activer le Hotplug CPU/RAM/Disk ? (O/N)"
+$VMName         = Read-Host "VM Name"
+$TargetPool     = Read-Host "Resource Pool (Leave empty for none)"
+$OSTypeInput    = Read-Host "OS Type (W for Windows 11 / L for Linux)"
+$TargetStorage  = Read-Host "Storage Name (from Name column)"
+$SizeGB         = Read-Host "Disk Size (in GB)"
+$RAM_GB         = Read-Host "RAM Amount (in GB)"
+$VMCoresInput   = Read-Host "Number of CPU Cores"
+$HotplugEnable  = Read-Host "Enable Hotplug CPU/RAM/Disk? (Y/N)"
+$NetworkBridge  = Read-Host "Network Bridge to use"
 
-# --- Calcul Automatique de la Topologie ---
-# Si on demande plus de coeurs qu'un seul socket physique n'en possède,
-# on passe à 2 sockets virtuels pour de meilleures perfs (NUMA).
+# --- Topology & Logic Processing ---
+
 $VMCores = [int]$VMCoresInput
+$RAM_MB = [int]$RAM_GB * 1024
+$ActualOSType = if ($OSTypeInput -eq "W") { "win11" } else { "l26" }
+
+# Automated Topology Logic
 if ($VMCores -gt $CoresPerSock) {
     $VMSockets = 2
     $VMCoresPerSocket = [Math]::Ceiling($VMCores / 2)
     $ActivateNuma = 1
-    Write-Host "ℹ️ Topologie : Répartition sur 2 sockets virtuels (Large VM)." -ForegroundColor Cyan
+    Write-Host "ℹ️ Topology: Spreading across 2 virtual sockets (Large VM)." -ForegroundColor Cyan
 } else {
     $VMSockets = 1
     $VMCoresPerSocket = $VMCores
     $ActivateNuma = 0
 }
 
-# Forcer NUMA si Hotplug RAM demandé (Prérequis QEMU)
-if ($HotplugEnable -eq "O") {
+# Hotplug & NUMA Enforcement
+if ($HotplugEnable -eq "Y" -or $HotplugEnable -eq "O") {
     $ActivateNuma = 1
     $HotplugValue = "network,disk,cpu,memory"
 } else {
     $HotplugValue = "network,disk,usb"
 }
 
-$NetworkBridge = Read-Host "Bridge réseau à utiliser"
+# Disk Optimization String
+$DiskOptions = if ($OSTypeInput -eq "W") { ",cache=writeback,discard=on,ssd=1" } else { ",ssd=1" }
 
-# Traitement des variables
-$RAM_MB = [int]$RAM_GB * 1024
-$ActualOSType = if ($OSTypeInput -eq "W") { "win11" } else { "l26" }
+# Optimized CPU Model selection
+$BestCPUType = "x86-64-v1"
+if ($CPUFlags -match "popcnt" -and $CPUFlags -match "sse4_2") { $BestCPUType = "x86-64-v2" }
+if ($CPUFlags -match "avx2" -and $CPUFlags -match "bmi2" -and $CPUFlags -match "fma") { $BestCPUType = "x86-64-v3" }
+if ($CPUFlags -match "avx512f" -and $CPUFlags -match "avx512vl" -and $CPUFlags -match "avx512bw") { $BestCPUType = "x86-64-v4" }
 
-# --- Construction de la chaîne de disque optimisée ---
-# Note : On utilise 'scsi0' et non 'virtio0' pour supporter l'option 'ssd'
-$DiskOptions = ""
-if ($OSTypeInput -eq "W") {
-    # Windows : Cache Writeback + Discard + Emulation SSD
-    $DiskOptions = ",cache=writeback,discard=on,ssd=1"
-} else {
-    # Linux : Uniquement Emulation SSD
-    $DiskOptions = ",ssd=1"
-}
+Write-Host "📡 API Analysis complete. Best physical CPU match: $BestCPUType" -ForegroundColor Green
 
-# --- Logique CPU optimisée  ---
-#$CPUType = "host" # Par défaut pour Linux
+# --- VM Provisioning ---
 
-# 1. Récupérer les flags réels du CPU du Node
-$NodeStatus = (Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes/$NodeTarget/status" -Headers $headers -Method GET -SkipCertificateCheck).data
-# Les flags sont souvent dans une chaîne de caractères séparés par des espaces
-$CPUFlags = $NodeStatus.cpuinfo.flags
-
-# 2. Logique de décision basée sur les prérequis réels
-$BestCPUType = "x86-64-v1" # Sécurité
-
-# Vérification v2 (Popcnt, SSE4.1, SSE4.2, SSSE3)
-if ($CPUFlags -match "popcnt" -and $CPUFlags -match "sse4_2") {
-    $BestCPUType = "x86-64-v2"
-}
-
-# Vérification v3 (AVX2, BMI1, BMI2, FMA, MOVBE)
-if ($CPUFlags -match "avx2" -and $CPUFlags -match "bmi2" -and $CPUFlags -match "fma") {
-    $BestCPUType = "x86-64-v3"
-}
-
-# Vérification v4 (AVX512F, AVX512BW, AVX512CD, AVX512DQ, AVX512VL)
-if ($CPUFlags -match "avx512f" -and $CPUFlags -match "avx512vl" -and $CPUFlags -match "avx512bw") {
-    $BestCPUType = "x86-64-v4"
-}
-
-$CPUType = $BestCPUType
-Write-Host "📡 Analyse API terminée. Meilleur choix physique : $BestCPUType" -ForegroundColor Green
-
-##### --- End CPU --- ###
-
-# 3. Récupération VMID
 $VMID = (Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/cluster/nextid" -Headers $headers -Method GET -SkipCertificateCheck).data
+Write-Host "`n🚀 Configuring $ActualOSType profile for $VMName (ID: $VMID)..." -ForegroundColor Cyan
 
-Write-Host "`n🚀 Configuration du profil $ActualOSType pour $VMName..." -ForegroundColor Cyan
-
-# 4. Création de la VM (Base + RNG + RAM convertie)
 $VMParams = @{
     vmid    = $VMID
     name    = $VMName
@@ -295,58 +232,50 @@ $VMParams = @{
     ostype  = $ActualOSType
     memory  = $RAM_MB
     numa    = $ActivateNuma
-    cores   = $VMCores
+    cores   = $VMCoresPerSocket
     sockets = $VMSockets
-    cpu     = $CPUType
+    cpu     = $BestCPUType
     hotplug = $HotplugValue
     machine = "q35"
     bios    = "ovmf"
     agent   = 1
-    vga     = "type=virtio,memory=128" # Ajout pour la fluidité graphique
-    scsihw  = "virtio-scsi-single"     # Indispensable pour l'iothread
+    vga     = "type=virtio,memory=128"
+    scsihw  = "virtio-scsi-single"
     net0    = "virtio,bridge=" + $NetworkBridge
     scsi0   = $TargetStorage + ":" + $SizeGB + ",format=qcow2" + $DiskOptions + ",iothread=1"
-    # Lecteur CD-ROM sur scsi1
     scsi1   = "none,media=cdrom"
     rng0    = "source=/dev/urandom"
 }
 
-# --- AJOUT DYNAMIQUE DU POOL ---
+# Dynamic Pool Assignment
 if (-not [string]::IsNullOrWhiteSpace($TargetPool)) {
-    Write-Host "🏷️ Assignation au pool : $TargetPool" -ForegroundColor Gray
+    Write-Host "🏷️ Assigning to pool: $TargetPool" -ForegroundColor Gray
     $VMParams.Add("pool", $TargetPool)
 }
+
 Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes/$NodeTarget/qemu" -Headers $headers -Method POST -Body $VMParams -SkipCertificateCheck
 
-# 5. Ajout EFI/TPM (Format qcow2 forcé pour Snapshots)
-Write-Host "🛡️ Sécurisation (TPM v2.0 + UEFI Secure Boot)..." -ForegroundColor Yellow
+# 5. Security (TPM v2.0 + UEFI Secure Boot)
+Write-Host "🛡️ Hardening (TPM v2.0 + UEFI Secure Boot)..." -ForegroundColor Yellow
 $ConfParams = @{
     efidisk0  = $TargetStorage + ":4,efitype=4m,pre-enrolled-keys=1,ms-cert=2023,format=qcow2"
     tpmstate0 = $TargetStorage + ":4,version=v2.0,format=qcow2"
 }
 Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes/$NodeTarget/qemu/$VMID/config" -Headers $headers -Method POST -Body $ConfParams -SkipCertificateCheck
 
-# 6. Activation HA (Mode Rules PVE 9)
-Write-Host "🔄 Enrôlement Haute Disponibilité..." -ForegroundColor Magenta
-$HAParams = @{ sid = "vm:$VMID"; state = "started"; comment = "Provisioning Auto" }
+# 6. HA Enrollment (PVE 9 Rules Mode)
+Write-Host "🔄 Enrolling in High Availability..." -ForegroundColor Magenta
+$HAParams = @{ sid = "vm:$VMID"; state = "started"; comment = "Auto Provisioned" }
 Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/cluster/ha/resources" -Headers $headers -Method POST -Body $HAParams -SkipCertificateCheck
 
-# 7. Récupération de l'adresse MAC pour affichage
+# 7. Final Verification
 try {
     $vmConfig = Invoke-RestMethod -Uri "$ProxmoxServer/api2/json/nodes/$NodeTarget/qemu/$VMID/config" -Headers $headers -Method GET -SkipCertificateCheck
-    # On cherche la MAC dans la chaîne net0 (ex: virtio=XX:XX:XX:XX:XX:XX,bridge=...)
-    if ($vmConfig.data.net0 -match "([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})") {
-        $VM_MAC = $matches[0]
-    }
-    else {
-        $VM_MAC = "Non générée"
-    }
+    $VM_MAC = if ($vmConfig.data.net0 -match "([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})") { $matches[0] } else { "Not generated" }
 }
-catch {
-    $VM_MAC = "Erreur de lecture"
-}
+catch { $VM_MAC = "Read error" }
 
-Write-Host "`n✅ VM $VMID ($VMName) créée avec succès !" -ForegroundColor Green
-Write-Host "ℹ️ RAM: $RAM_MB Mo | Disque: $SizeGB Go (qcow2) | Profil: $ActualOSType" -ForegroundColor White
-Write-Host "🌐 MAC: $VM_MAC" -ForegroundColor Cyan
-Write-Host "📡 Réseau: $NetworkBridge" -ForegroundColor White
+Write-Host "`n✅ VM $VMID ($VMName) created successfully!" -ForegroundColor Green
+Write-Host "ℹ️ RAM: $RAM_MB MB | Disk: $SizeGB GB (qcow2) | Profile: $ActualOSType" -ForegroundColor White
+Write-Host "🌐 MAC Address: $VM_MAC" -ForegroundColor Cyan
+Write-Host "📡 Network: $NetworkBridge" -ForegroundColor White
