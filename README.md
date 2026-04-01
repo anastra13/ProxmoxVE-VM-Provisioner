@@ -1,47 +1,46 @@
 # 🚀 Proxmox 9.1 Modern VM Provisioner (PowerShell 7.X)
 
-Ce script PowerShell automatise la création de machines virtuelles sur **Proxmox VE 9.1** en respectant les standards de performance et de sécurité actuels (Windows 11 Ready, SDN, et HA).
+This PowerShell script automates Virtual Machine creation on **Proxmox VE 9.1**, adhering to modern performance and security standards (Windows 11 Ready, SDN, and High Availability).
 
-## ✨ Fonctionnalités
+## ✨ Key Features
 
-* **Authentification Hybride** : Supporte les Tokens API (recommandé) et les comptes utilisateurs (Ticket + CSRF).
-* **Intelligence CPU & Topologie (Nouveau)** :
-    * **Analyse Physique** : Récupère les capacités réelles du nœud (cœurs/sockets) pour optimiser le placement.
-    * **Topologie Auto-Adaptive** : Aligne automatiquement le nombre de sockets virtuels sur l'architecture physique pour éviter les latences de cache.
-    * **Gestion du NUMA** : Activation intelligente du NUMA pour les "Large VMs" ou lors de l'activation du Hotplug.
-* **Hotplug Dynamique** : Option pour activer l'ajout à chaud de **CPU, RAM, Disque et Réseau**.
-* **Sécurité Windows 11 Ready** :
-    * BIOS **UEFI (OVMF)** avec Secure Boot (Certificats Microsoft 2023).
-    * **TPM v2.0** émulé.
-* **Optimisé pour la Production** :
-    * Contrôleur **VirtIO SCSI Single** (meilleures perfs IO).
-    * Disques forcés au format **qcow2** pour garantir le support des Snapshots.
-    * Lecteur CD-ROM sur bus **SCSI** pour éviter les limitations de l'IDE.
-* **Intelligence de Cluster** : Sélection automatique du nœud via le statut **LRM (Haute Disponibilité)**.
+* **Hybrid Authentication**: Supports both API Tokens (Recommended) and User Accounts (Ticket + CSRF).
+* **Smart CPU & Topology Logic (New)**:
+    * **Hardware Analysis**: Dynamically retrieves node capabilities (cores/sockets) to optimize VM placement.
+    * **Auto-Adaptive Topology**: Automatically aligns virtual sockets with physical architecture to prevent cache latency.
+    * **NUMA Awareness**: Intelligent NUMA activation for "Large VMs" or when Hotplug is enabled.
+* **Dynamic Hotplug**: Optional support for on-the-fly **CPU, RAM, Disk, and Network** resizing without reboot.
+* **Windows 11 Ready**:
+    * **UEFI (OVMF)** BIOS with Secure Boot (Microsoft 2023 Certificates).
+    * Emulated **TPM v2.0**.
+* **Production Optimized**:
+    * **VirtIO SCSI Single** controller for superior IO performance.
+    * All disks (including EFI/TPM) forced to **qcow2** format to ensure full Snapshot support.
+    * CD-ROM drive mapped to the **SCSI bus** (replacing legacy IDE) for better driver management.
+* **Cluster Intelligence**: Automatic node selection based on **LRM (Local Resource Manager)** High Availability status.
 
+## 🚀 Getting Started
 
-## 🚀 Utilisation
+### Prerequisites
+- **PowerShell 7+** (Required for modern REST API handling).
+- A **Proxmox VE 9.1** cluster with API access enabled.
 
-### Prérequis
-- PowerShell 7+ installé.
-- Un cluster Proxmox VE 9.1.
-
-### Via Token API (Recommandé)
+### Option 1: Run via API Token (Recommended)
 ```powershell
 ./Add_VM_PVE.ps1 -FQDN "pve.mon-domaine.com" -TokenID "root@pam!mon-token" -Secret "ton-secret-uuid"
 
 ```
-### Exemples d'authentification par compte
-
-* Compte Système Linux (PAM).
+### Option 2: Run via User Account
+🔐 Authentication Examples by Account Type
+* Linux System Account (PAM): For standard Linux users on the host.
     ```powershell
     ./Add_VM_PVE.ps1 -FQDN "pve.domaine.com" -Username "root@pam" -Password "MonMotDePasse"
     ```
-* **Compte Interne Proxmox (PVE)** : Pour les utilisateurs créés directement dans l'interface Proxmox.
+* **Proxmox Internal Account (PVE): For users created directly within the Proxmox interface.
     ```powershell
     ./Add_VM_PVE.ps1 -FQDN "pve.domaine.com" -Username "admin@pve" -Password "MonMotDePasse"
     ```
-* Compte de domaine (ad) : Pour les utilisateurs d'un domaine Microsoft.
+* Active Directory / LDAP Account: For users authenticated via a Microsoft Domain or external LDAP.
     ```powershell
     ./Add_VM_PVE.ps1 -FQDN "pve.domaine.com" -Username "admin@domaine.com" -Password "MonMotDePasse"
     ```
